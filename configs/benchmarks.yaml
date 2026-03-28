@@ -1,0 +1,33 @@
+benchmarks:
+  tasks:
+    - name: "needle_in_haystack"
+      enabled: true
+      context_lengths: [4096, 8192, 16384, 32768]
+      num_needles: 1
+      num_distractors: 10
+      num_trials: 3
+      needle_position: "random"  # "random" | "early" | "middle" | "late"
+
+    - name: "passkey_retrieval"
+      enabled: true
+      context_lengths: [4096, 8192, 16384]
+      num_trials: 5
+
+    - name: "multi_hop_qa"
+      enabled: false
+      dataset: "hotpotqa"
+      max_samples: 100
+
+  metrics:
+    - "accuracy"
+    - "recall_at_k"
+    - "mrr"
+    - "hit_rate"
+    - "latency_ms"
+    - "peak_vram_mb"
+    - "ram_mb"
+    - "tokens_per_second"
+
+  output_dir: "results/"
+  save_predictions: true
+  save_retrieved_blocks: true

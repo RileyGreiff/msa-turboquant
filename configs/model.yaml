@@ -1,0 +1,14 @@
+model:
+  name: "Qwen/Qwen2.5-3B-Instruct"
+  # Alternative: "microsoft/Phi-3.5-mini-instruct"
+  # Alternative: "microsoft/Phi-4-mini-instruct"
+  dtype: "float16"
+  device: "cuda:0"
+  max_seq_len: 32768
+  trust_remote_code: true
+  attn_implementation: "sdpa"  # "sdpa" | "flash_attention_2" | "eager"
+
+tokenizer:
+  name: null  # defaults to model.name if null
+  padding_side: "left"
+  max_length: 32768

@@ -1,0 +1,25 @@
+experiment:
+  name: "baseline_qwen25_3b"
+  seed: 42
+
+  # Evaluation mode
+  mode: "dense"  # "dense" | "sparse" | "compression_only" | "sparse_plus_compression" | "oracle_plus_compression"
+
+  logging:
+    level: "INFO"  # DEBUG | INFO | WARNING | ERROR
+    console_format: "rich"  # "rich" | "plain"
+    file_output: "results/logs/{experiment_name}_{timestamp}.log"
+    json_logs: true
+
+  device:
+    gpu_id: 0
+    pin_memory: true
+    num_workers: 0  # 0 for Windows compatibility
+
+  paths:
+    data_dir: "data/"
+    raw_dir: "data/raw/"
+    processed_dir: "data/processed/"
+    memory_banks_dir: "data/memory_banks/"
+    results_dir: "results/"
+    configs_dir: "configs/"

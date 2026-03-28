@@ -1,0 +1,32 @@
+# Core ML
+torch>=2.4.0
+transformers>=4.40.0
+accelerate>=1.0.0
+
+# Config and validation
+pydantic>=2.10.0
+pydantic-settings>=2.10.0
+PyYAML>=6.0
+
+# Retrieval
+faiss-cpu>=1.7.0
+
+# Numerics and data
+numpy>=1.26.0,<2.0
+safetensors>=0.4.0
+
+# Tokenizers
+sentencepiece>=0.2.0
+tiktoken>=0.7.0
+
+# Profiling and system info
+psutil>=5.9.0
+
+# Visualization
+matplotlib>=3.8.0
+
+# Console formatting
+rich>=13.0.0
+
+# Testing
+pytest>=8.0.0

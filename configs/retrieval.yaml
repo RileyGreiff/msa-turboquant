@@ -1,0 +1,14 @@
+retrieval:
+  engine: "faiss"  # "faiss" | "torch_cosine"
+  index_type: "IndexFlatIP"  # cosine similarity via L2-normalized vectors
+  nprobe: 10  # for IVF indices (ignored for flat)
+  top_k: 5
+  normalize_embeddings: true
+
+  # Chunking parameters (used during memory bank building)
+  chunk_size: 512  # tokens per chunk
+  chunk_overlap: 64  # overlap tokens between consecutive chunks
+
+  # Routing vector source
+  routing_vector: "mean_hidden_state"  # "mean_hidden_state" | "cls_token" | "last_token"
+  routing_dim: null  # auto-detected from model hidden size

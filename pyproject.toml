@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=69.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "msa-turboquant-local"
+version = "0.1.0"
+description = "Local extreme-context memory benchmark harness for sparse retrieval + compressed KV storage"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+
+[project.scripts]
+turboquant = "src.main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "gpu: marks tests as requiring CUDA GPU",
+    "slow: marks tests as slow-running",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
