@@ -11,7 +11,7 @@ A local research harness for benchmarking sparse external memory retrieval and K
 - Maximizes **stored** memory size (thousands of text blocks in an external bank)
 - Keeps the **active attended context** small (fits in GPU VRAM)
 - Measures quality and performance degradation as stored memory grows
-- Compares five retrieval/compression strategies head-to-head
+- Compares retrieval and compression strategies via direct KV cache injection
 - Provides config-driven scale sweeps with automatic plotting
 
 **This is NOT:**
@@ -59,9 +59,16 @@ The core research question:
               +--------+---------+
                        |
               +--------v---------+
+              |  KV Injection     |
+              |  (encode context, |
+              |   chunked prefill,|
+              |   compress/inject)|
+              +--------+---------+
+                       |
+              +--------v---------+
               |  Eval Harness     |
-              |  (NIAH, passkey,  |
-              |   scoring, profiler)|
+              |  (NIAH, scoring,  |
+              |   profiler)       |
               +--------+---------+
                        |
               +--------v---------+
@@ -73,25 +80,32 @@ The core research question:
 
 ### Data Flow
 
-1. **Offline**: Text is chunked into blocks. Each block is passed through the model to extract KV cache tensors and a routing vector (mean-pooled hidden state). These are stored in a memory bank (in-memory or disk-backed via numpy memmap).
+1. **Offline bank building**: Text is chunked into blocks. Each block is passed through the model to extract KV cache tensors and a routing vector (mean-pooled hidden state). These are stored in a memory bank on disk via numpy memmap. Banks are cached and reused across experiments.
 
-2. **At query time**: The query is encoded into a routing vector, which is compared against all bank routing vectors via FAISS IndexFlatIP (cosine similarity). The top-k blocks are retrieved, their KV tensors fetched, and the retrieved text is assembled into the generation context.
+2. **At query time**: The query is encoded into a routing vector, which is compared against all bank routing vectors via FAISS IndexFlatIP or torch cosine similarity. The top-k block indices are returned.
 
-3. **Compression**: Optionally, KV tensors are compressed before storage (or at retrieval time for quality measurement). Compression methods range from simple symmetric INT8 to TurboQuant-inspired rotation + groupwise quantization.
+3. **KV injection**: The retrieved blocks' text is concatenated and re-encoded via a contiguous forward pass (with chunked prefill for long contexts), producing a KV cache with correct RoPE positions. This KV is optionally compressed and decompressed (roundtrip degradation), then injected as `past_key_values` into the model's generate call.
 
-4. **Evaluation**: For each NIAH sample, the harness generates an answer, checks correctness via substring match, and records retrieval quality, systems metrics, and profiling data.
+4. **Evaluation**: The model generates an answer conditioned on the injected KV. Correctness is checked via substring match against the NIAH ground truth. Retrieval quality, systems metrics, and profiling data are recorded per sample.
 
 ---
 
-## Five Comparison Modes
+## Evaluation Modes
 
-| Mode | Retrieval | Compression | Purpose |
-|------|-----------|-------------|---------|
-| **Dense** | None (full context) | None | Baseline: how does the model perform with all text in context? |
-| **Sparse** | Top-k from FAISS | None | Can sparse retrieval find the right blocks? |
-| **Compression Only** | None (full context) | Yes | How much quality does compression lose? |
-| **Sparse + Compression** | Top-k from FAISS | Yes | The realistic deployed scenario |
-| **Oracle + Compression** | Perfect (gold blocks) | Yes | Upper bound: if retrieval were perfect, how much does compression hurt? |
+The harness supports several modes that isolate different variables. The primary modes for research are the KV injection variants:
+
+| Mode | Retrieval | KV Injection | Compression | Purpose |
+|------|-----------|-------------|-------------|---------|
+| **sparse_text** | Top-k (sparse) | No | No | Baseline: text-only generation from retrieved blocks |
+| **kv_inject** | Top-k (sparse) | Yes | No (FP16) | Does KV injection match text-based generation? |
+| **kv_inject_compressed** | Top-k (sparse) | Yes | Yes | The core research result: compression degradation at scale |
+| **oracle_kv_inject** | Perfect (gold) | Yes | No (FP16) | Upper bound: perfect retrieval + FP16 KV injection |
+| **oracle_kv_inject_compressed** | Perfect (gold) | Yes | Yes | Isolates compression quality (no retrieval noise) |
+| **dense** | None (full context) | No | No | Dense attention baseline (infeasible at large bank sizes) |
+
+**Why KV injection matters:** Earlier text-based compression modes (`sparse_plus_compression`, `compression_only`) had a critical flaw: KV was compressed and decompressed but generation still used plain text, so compression had zero effect on accuracy. The KV injection modes fix this by feeding the (potentially degraded) KV cache directly into attention.
+
+**Chunked prefill:** For large retrieved contexts, `encode_context_to_kv()` splits the context into chunks and processes them incrementally, passing accumulated KV between chunks. This keeps activation memory bounded while maintaining contiguous RoPE positions.
 
 ---
 
@@ -117,21 +131,22 @@ The rotation matrix is deterministic (seeded), so it is not stored per tensor.
 
 ---
 
-## Experiment Plan
+## Experiment Design
 
 ### Scale Sweep Parameters
 
 The `SweepConfig` defines axes to sweep over:
 
-| Axis | Example Values | What It Tests |
+| Axis | Default Values | What It Tests |
 |------|---------------|---------------|
-| `bank_sizes` | [10, 50, 100, 500] | How quality degrades as stored memory grows |
-| `block_chars` | [200, 500, 1000] | Effect of block granularity |
-| `top_k_values` | [1, 3, 5, 10] | Retrieval breadth vs. noise |
+| `bank_sizes` | [500, 1000, 2000, 4000] | How quality degrades as stored memory grows |
+| `block_chars` | [500] | Characters per block (controls block granularity) |
+| `top_k_values` | [10, 20, 50] | Retrieval breadth vs. noise |
 | `compression_methods` | [none, int8, int4, turboquant_like] | Compression vs. quality tradeoff |
-| `modes` | [dense, sparse, sparse_plus_compression] | Strategy comparison |
+| `modes` | [sparse_text, kv_inject, kv_inject_compressed, oracle_kv_inject, oracle_kv_inject_compressed] | Strategy comparison |
+| `num_trials` | 5 | Repeated trials per combo (averaged for statistical signal) |
 
-The runner generates the cross-product (with smart pruning of nonsensical combos), executes each with the eval harness, and produces summary tables and plots.
+The runner generates the cross-product (with smart pruning of nonsensical combos like compression on non-compression modes), executes each with the eval harness, and produces summary tables and plots.
 
 ### Metrics Collected
 
@@ -140,12 +155,24 @@ The runner generates the cross-product (with smart pruning of nonsensical combos
 - Retrieval recall@k, MRR, hit rate, precision@k
 
 **Systems metrics (per-phase profiling):**
-- Wall clock time (total and per-phase: bank_build, route, fetch, compress, generate, score)
+- Wall clock time (total and per-phase: bank_build, route, kv_encode, compress, generate, score)
 - Peak GPU VRAM (MB)
 - Peak RAM usage (MB)
 - Bytes fetched from memory bank
 - Tokens generated per second
 - Compression ratio
+
+---
+
+## Results
+
+*Pending. Run `python demo_scale.py` to generate results.*
+
+Results will be saved to `results/scale_sweep/` including:
+- `sweep_full.json` — all individual run records
+- `sweep_summary.csv` — averaged metrics per parameter combo
+- `max_context_summary.json` — maximum viable context per compression method
+- `plots/` — accuracy vs. context size, max context comparison, latency breakdown
 
 ---
 
@@ -155,35 +182,33 @@ The runner generates the cross-product (with smart pruning of nonsensical combos
 
 1. **Accuracy vs. bank size**: As the bank grows, does sparse retrieval maintain accuracy? A flat line means the router is effective; a declining curve means relevant blocks get lost in noise.
 
-2. **Compression quality gap**: Compare "sparse" vs "sparse + compression" at the same bank size. The gap shows how much quality compression costs. If TurboQuant-like closes the gap vs. plain INT4, the rotation is doing its job.
+2. **Sparse vs. oracle KV injection**: The gap isolates retrieval quality. If oracle is much better, the bottleneck is retrieval, not compression.
 
-3. **Oracle vs. sparse**: The gap between oracle and sparse modes isolates retrieval quality from compression quality. If oracle is much better, the bottleneck is retrieval, not compression.
+3. **Oracle KV compressed across methods**: With perfect retrieval, the only variable is compression. This directly measures how INT8/INT4/TurboQuant degrade KV quality.
 
-4. **Latency breakdown**: The phase-level profiler shows where time is spent. At small bank sizes, generation dominates. At large bank sizes, routing and fetching may become significant.
+4. **TurboQuant vs. INT4**: Both use ~4.25 bits. If TurboQuant-like maintains higher accuracy, the rotation is doing its job of spreading outlier magnitudes.
 
-5. **Tokens/sec**: Should stay roughly constant if the active context window size is fixed (it is). If it drops, something is being injected into the context that shouldn't be.
+5. **Latency breakdown**: The phase-level profiler shows where time is spent. At small bank sizes, generation dominates. At large bank sizes, KV encoding and routing may become significant.
 
 ### Common pitfalls
 
 - **Small bank sizes don't stress the system.** With 10 blocks and top_k=5, you're retrieving half the bank — of course recall is high. Use bank_size >> top_k for meaningful measurements.
 - **Synthetic data is not real data.** NIAH tasks test retrieval precision but don't capture the distributional complexity of real documents. Results here are necessary but not sufficient.
-- **DummyModel tests verify the pipeline, not quality.** The test suite uses a DummyModel with random weights. Real quality measurements require a loaded model (e.g., Qwen2.5-3B-Instruct).
+- **DummyModel tests verify the pipeline, not quality.** The test suite uses a DummyModel with random weights. Real quality measurements require a loaded model (e.g., Qwen2.5-3B).
 
 ---
 
 ## Limitations
 
-1. **No actual model inference in tests.** All 294 tests use a DummyModel with random tensors. This validates the pipeline end-to-end but says nothing about real model quality.
+1. **No actual model inference in tests.** All 309 tests use a DummyModel with random tensors. This validates the pipeline end-to-end but says nothing about real model quality.
 
-2. **Text-based context assembly.** Currently, retrieved blocks are assembled as text and re-tokenized. A more efficient approach would inject retrieved KV tensors directly into the attention mechanism, but this requires model-specific attention surgery.
+2. **Residual correction not implemented.** The TurboQuant-like compressor has a `residual_correction` flag, but it's a no-op placeholder for future work.
 
-3. **Residual correction not implemented.** The TurboQuant-like compressor has a `residual_correction` flag, but it's a no-op placeholder for future work.
+3. **Single-GPU, CPU-FAISS only.** FAISS GPU is unavailable on this platform. For bank sizes in the thousands, CPU FAISS with IndexFlatIP is fine; for millions, approximate indices would be needed.
 
-4. **Single-GPU, CPU-FAISS only.** FAISS GPU is unavailable on this platform. For bank sizes in the thousands, CPU FAISS with IndexFlatIP is fine; for millions, approximate indices would be needed.
+4. **No streaming/incremental bank updates.** The bank is built offline in one pass. Incremental append and eviction are future work.
 
-5. **No streaming/incremental bank updates.** The bank is built offline in one pass. Incremental append and eviction are future work.
-
-6. **Windows-specific.** Tested on Windows 11 with `multiprocessing.freeze_support()` and `num_workers=0`. Linux should work but is untested.
+5. **Windows-specific.** Tested on Windows 11 with `multiprocessing.freeze_support()` and `num_workers=0`. Linux should work but is untested.
 
 ---
 
@@ -207,40 +232,11 @@ pip install -r requirements.txt
 # Verify setup (loads config, logs system info, exits)
 python -m src.main --dry-run
 
-# Run tests
+# Run tests (309 tests, ~35s)
 pytest
 
-# Run a scale sweep (with DummyModel, for pipeline validation)
-python -c "
-from tests.test_models import DummyModel
-from src.experiments.sweep_config import SweepConfig
-from src.experiments.run_scale_sweep import ScaleSweep
-
-model = DummyModel(hidden_size=64, num_layers=2, num_heads=4)
-model.load()
-model.decode = lambda ids: ['answer'] * ids.shape[0]
-
-config = SweepConfig(
-    modes=['sparse', 'sparse_plus_compression'],
-    bank_sizes=[5, 10],
-    top_k_values=[2, 3],
-    compression_methods=['none', 'int4'],
-    num_trials=1,
-    router_engine='torch_cosine',
-)
-sweep = ScaleSweep(model=model, config=config)
-result = sweep.run()
-sweep.save(result, 'results/demo_sweep')
-print(f'Saved {len(result.records)} runs')
-"
-
-# Generate plots from sweep results
-python -c "
-from src.experiments.sweep_plots import generate_sweep_plots
-from src.utils.io_utils import load_json
-data = load_json('results/demo_sweep/sweep_full.json')
-generate_sweep_plots(data['averaged'], 'results/demo_sweep/plots')
-"
+# Run the full scale sweep on a real model (requires CUDA GPU)
+python demo_scale.py
 ```
 
 ---
@@ -255,7 +251,7 @@ msa_turboquant_local/
 │   ├── compression.yaml    #   Compression method and parameters
 │   ├── benchmarks.yaml     #   Task definitions, metrics, output settings
 │   └── experiment.yaml     #   Experiment name, seed, logging, paths
-├── data/                   # Raw data, processed data, memory banks
+├── data/                   # Raw data, processed data, memory banks, bank cache
 ├── docs/
 │   └── PROJECT_SPEC.md     # Full project specification (11 milestones)
 ├── src/
@@ -268,8 +264,10 @@ msa_turboquant_local/
 │   │   ├── chunking.py     #   TextBlock, chunk_text, chunk_by_tokens
 │   │   ├── bank_builder.py #   MemoryBankBuilder, MemoryBank, MemoryBankMetadata
 │   │   ├── bank_store.py   #   save_bank, load_bank, load_routing_vectors, load_kv_for_blocks
+│   │   ├── bank_cache.py   #   BankCache (build once, lazy KV loading)
 │   │   ├── router.py       #   FaissRouter, TorchCosineRouter, OracleRouter
 │   │   ├── fetcher.py      #   MemoryFetcher (in-memory + disk-backed)
+│   │   ├── kv_injector.py  #   KV injection: encode_context_to_kv, chunked prefill
 │   │   └── interleave.py   #   assemble_context (prepend/interleave/summarize_prefix)
 │   ├── compression/
 │   │   ├── base.py         #   BaseCompressor ABC, CompressedTensor
@@ -282,7 +280,7 @@ msa_turboquant_local/
 │   │   ├── retrieval_metrics.py  # recall@k, MRR, hit_rate, precision@k
 │   │   ├── systems_metrics.py    # SystemsSnapshot, RunMetrics, MetricsCollector
 │   │   ├── profiler.py     #   RunProfiler, PhaseRecord, ProfilingReport
-│   │   └── run_eval.py     #   EvalHarness (5 modes), score_answer, save_results
+│   │   └── run_eval.py     #   EvalHarness (KV injection + legacy modes)
 │   ├── experiments/
 │   │   ├── sweep_config.py #   SweepConfig, SweepRunRecord, SweepResult
 │   │   ├── run_scale_sweep.py  # ScaleSweep runner
@@ -293,7 +291,7 @@ msa_turboquant_local/
 │       ├── profiling.py    #   Timer, GPUMemoryTracker, log_system_info
 │       ├── plotting.py     #   matplotlib helpers
 │       └── io_utils.py     #   JSON/CSV/YAML I/O, path helpers
-├── tests/                  # 294 pytest tests
+├── tests/                  # 309 pytest tests
 │   ├── conftest.py
 │   ├── test_config.py      #   Config loading, validation, overrides
 │   ├── test_logging.py     #   Logger setup, JSON formatting
@@ -306,9 +304,13 @@ msa_turboquant_local/
 │   ├── test_router.py      #   FAISS/cosine/oracle routers, fetcher
 │   ├── test_compression.py #   FP16, INT8, INT4 compressors
 │   ├── test_turboquant.py  #   TurboQuant-like rotation + quantization
-│   ├── test_eval.py        #   Eval harness, interleave, systems metrics
+│   ├── test_eval.py        #   Eval harness (KV injection + legacy modes)
+│   ├── test_kv_injector.py #   KV injection, chunked prefill, compression roundtrip
 │   ├── test_profiler.py    #   RunProfiler, compression wiring
 │   └── test_sweep.py       #   SweepConfig, ScaleSweep, sweep plots
+├── demo.py                 # Quick pipeline demo (DummyModel)
+├── demo_real_model.py      # Single-run demo with real model
+├── demo_scale.py           # Full scale sweep (Qwen2.5-3B, 500-4000 blocks)
 ├── notebooks/              # Exploration notebooks
 ├── results/                # Experiment outputs
 ├── pyproject.toml
@@ -358,7 +360,8 @@ CLI overrides: `python -m src.main --override model.max_seq_len=4096 --dry-run`
 - [x] M8: TurboQuant-inspired compressor (rotation + groupwise quantization)
 - [x] M9: Systems profiling (per-phase timing, memory tracking, bytes fetched)
 - [x] M10: Scale sweeps (config-driven parameter grid, summary tables, auto plots)
-- [x] M11: Long-form README and research framing
+- [x] M11: KV injection pipeline (chunked prefill, oracle variants, compression roundtrip)
+- [ ] M12: Full scale sweep results and analysis
 
 ---
 

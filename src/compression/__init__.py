@@ -40,7 +40,7 @@ def create_compressor(method: str = "none", **kwargs) -> BaseCompressor:
     elif method == "turboquant_like":
         return TurboQuantLikeCompressor(
             bits=kwargs.get("bits", 4),
-            group_size=kwargs.get("group_size", 32),
+            group_size=kwargs.get("group_size", 128),
             rotation=kwargs.get("rotation", "random_orthogonal"),
             seed=kwargs.get("seed", 42),
             residual_correction=kwargs.get("residual_correction", False),
