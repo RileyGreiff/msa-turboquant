@@ -164,10 +164,24 @@ class EvalRunResult:
 def score_answer(model_answer: str, expected_answer: str) -> bool:
     """Check if the model's answer contains the expected answer.
 
-    Simple substring match — sufficient for NIAH where the answer is a
-    specific number or passkey. More sophisticated scoring can be added later.
+    Normalizes whitespace and punctuation before matching so that
+    tokenization artifacts (e.g. "550 6" for "5506") don't cause
+    false negatives.  For numeric answers (common in NIAH), also
+    strips all spaces/punctuation from both strings before comparing.
     """
-    return expected_answer.lower().strip() in model_answer.lower().strip()
+    answer = model_answer.lower().strip()
+    expected = expected_answer.lower().strip()
+
+    # Direct substring match
+    if expected in answer:
+        return True
+
+    # Normalize: collapse whitespace and strip punctuation, then retry.
+    # Handles "550 6" -> "5506", "55,06" -> "5506", etc.
+    import re
+    answer_norm = re.sub(r"[\s.,;:!?'\"-]+", "", answer)
+    expected_norm = re.sub(r"[\s.,;:!?'\"-]+", "", expected)
+    return expected_norm in answer_norm
 
 
 def _build_text_blocks_from_niah(sample: NIAHSample) -> list[TextBlock]:

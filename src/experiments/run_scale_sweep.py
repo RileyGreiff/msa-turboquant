@@ -143,9 +143,14 @@ class ScaleSweep:
                 seed=seed,
             )
 
-        # Use cached bank if available (avoids rebuilding per run)
+        # Use cached bank if available (avoids rebuilding per run).
+        # Bank cache is only valid for single-needle tasks — multi-needle
+        # samples use a different filler text generator so the routing
+        # vectors in the cached bank don't match.
         prebuilt_bank = None
-        if self._bank_cache is not None and mode != "dense":
+        if (self._bank_cache is not None
+                and mode != "dense"
+                and task_type == "single_needle"):
             prebuilt_bank = self._bank_cache.get_or_build(
                 num_blocks=bank_size,
                 block_chars=block_chars,

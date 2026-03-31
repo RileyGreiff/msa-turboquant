@@ -239,15 +239,15 @@ class TurboQuantMSECompressor(BaseCompressor):
         # Squeeze keepdim for storage
         norms_flat = norms.squeeze(-1)
 
-        # After normalization, each vector has unit norm.
-        # The rotated coordinates will be ~ N(0, 1/sqrt(d)) by CLT.
-        # Scale to standard normal for the codebook.
-        d = original_dim
-        scale_factor = math.sqrt(d)
-
         # Step 2: Apply rotation
         rotated = self._rotate(t_normalized)
         rotated_dim = rotated.shape[-1]
+
+        # After normalization, each vector has unit norm.
+        # The rotated coordinates are ~ N(0, 1/sqrt(d)) by CLT, where d
+        # is the rotated dimension (may differ from original_dim if
+        # Hadamard padding was applied).
+        scale_factor = math.sqrt(rotated_dim)
 
         # Scale rotated coordinates to ~ N(0, 1) for the codebook
         rotated_scaled = rotated * scale_factor
