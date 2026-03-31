@@ -26,6 +26,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import torch
+
 from src.compression import create_compressor
 from src.eval.niah import generate_niah_sample
 from src.eval.profiler import RunProfiler
@@ -59,6 +61,10 @@ class ScaleSweep:
         self._config = config
         self._enable_profiling = enable_profiling
         self._bank_cache = bank_cache
+        # In-memory bank cache for non-single-needle tasks (keyed by
+        # (task_type, bank_size, block_chars, seed) to avoid rebuilding
+        # the same bank 36+ times per parameter combo).
+        self._runtime_bank_cache: dict[tuple, Any] = {}
 
     def run(self) -> SweepResult:
         """Execute the full sweep and return aggregated results."""
@@ -144,18 +150,42 @@ class ScaleSweep:
             )
 
         # Use cached bank if available (avoids rebuilding per run).
-        # Bank cache is only valid for single-needle tasks — multi-needle
+        # Disk bank cache is only valid for single-needle tasks — multi-needle
         # samples use a different filler text generator so the routing
         # vectors in the cached bank don't match.
         prebuilt_bank = None
-        if (self._bank_cache is not None
-                and mode != "dense"
-                and task_type == "single_needle"):
+        if mode == "dense":
+            pass  # Dense doesn't use a bank
+        elif task_type == "single_needle" and self._bank_cache is not None:
             prebuilt_bank = self._bank_cache.get_or_build(
                 num_blocks=bank_size,
                 block_chars=block_chars,
                 seed=seed,
             )
+        elif task_type != "single_needle":
+            # For multi-needle: use in-memory runtime cache to avoid
+            # rebuilding the same bank 36+ times per (task_type, bank_size, seed).
+            # Only routing vectors are kept — KV is cleared to save VRAM
+            # (a 4000-block bank's KV is ~17 GB; routing vectors are ~31 MB).
+            cache_key = (task_type, bank_size, block_chars, seed)
+            if cache_key in self._runtime_bank_cache:
+                prebuilt_bank = self._runtime_bank_cache[cache_key]
+            else:
+                import gc
+                from src.eval.run_eval import _build_text_blocks_from_niah
+                from src.memory.bank_builder import MemoryBankBuilder
+                text_blocks = _build_text_blocks_from_niah(sample)
+                builder = MemoryBankBuilder(self._model, extraction_mode="direct")
+                prebuilt_bank = builder.build(text_blocks, bank_id=f"{task_type}_{bank_size}_{seed}")
+                # Clear KV blocks — KV inject modes re-encode from text,
+                # only routing vectors are needed for retrieval.
+                for kb in prebuilt_bank.kv_blocks:
+                    kb.keys.clear()
+                    kb.values.clear()
+                gc.collect()
+                torch.cuda.empty_cache()
+                self._runtime_bank_cache[cache_key] = prebuilt_bank
+                logger.info(f"  Built runtime bank for {cache_key}")
 
         # Run evaluation
         eval_result = harness.evaluate([sample], run_id=run_id, prebuilt_bank=prebuilt_bank)
