@@ -301,14 +301,16 @@ def encode_context_to_kv(
     compression_ratio = 0.0
     if compressor is not None:
         original_bytes = kv_block.total_kv_bytes
+        compressed_bytes = 0
         for i in range(kv_block.num_layers):
             compressed_k = compressor.compress(kv_block.keys[i])
             compressed_v = compressor.compress(kv_block.values[i])
+            compressed_bytes += compressed_k.compressed_bytes
+            compressed_bytes += compressed_v.compressed_bytes
             kv_block.keys[i] = compressor.decompress(compressed_k)
             kv_block.values[i] = compressor.decompress(compressed_v)
-        decompressed_bytes = kv_block.total_kv_bytes
-        if decompressed_bytes > 0:
-            compression_ratio = original_bytes / decompressed_bytes
+        if compressed_bytes > 0:
+            compression_ratio = original_bytes / compressed_bytes
 
     # Build injection payload from the (possibly degraded) KV
     query_tokens = model.tokenize(query_text)

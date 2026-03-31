@@ -66,23 +66,28 @@ class Int4Config(BaseModel):
     symmetric: bool = True
 
 
-class TurboQuantLikeConfig(BaseModel):
+class TurboQuantMSEConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     rotation: Literal["random_orthogonal", "hadamard"] = "random_orthogonal"
     bits: int = 4
-    group_size: int = 32
     seed: int = 42
-    residual_correction: bool = False
+
+
+# Backwards compat aliases
+TurboQuantLikeConfig = TurboQuantMSEConfig
+RotatedUniformConfig = TurboQuantMSEConfig
 
 
 class CompressionConfig(BaseModel):
     """Compression method configuration."""
     model_config = ConfigDict(extra="forbid")
 
-    method: Literal["none", "fp16", "int8", "int4", "turboquant_like"] = "none"
+    method: Literal[
+        "none", "fp16", "int8", "int4", "turboquant_mse",
+    ] = "none"
     int8: Int8Config = Int8Config()
     int4: Int4Config = Int4Config()
-    turboquant_like: TurboQuantLikeConfig = TurboQuantLikeConfig()
+    turboquant_mse: TurboQuantMSEConfig = TurboQuantMSEConfig()
 
 
 class BenchmarkTaskConfig(BaseModel):

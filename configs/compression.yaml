@@ -1,6 +1,6 @@
 compression:
   # Which compressor to use for stored KV/hidden states
-  method: "none"  # "none" | "fp16" | "int8" | "int4" | "turboquant_like"
+  method: "none"  # "none" | "fp16" | "int8" | "int4" | "turboquant_mse"
 
   # INT8 settings
   int8:
@@ -11,10 +11,8 @@ compression:
     group_size: 128
     symmetric: true
 
-  # TurboQuant-inspired settings
-  turboquant_like:
+  # TurboQuant MSE settings (Lloyd-Max codebook quantization)
+  turboquant_mse:
     rotation: "random_orthogonal"  # "random_orthogonal" | "hadamard"
     bits: 4
-    group_size: 128
     seed: 42  # for reproducible rotation matrix
-    residual_correction: false  # future: optional residual path for keys

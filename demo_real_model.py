@@ -68,7 +68,7 @@ print(f"  Tensor shape: {real_tensor.shape}")
 print(f"  Tensor range: [{real_tensor.min():.3f}, {real_tensor.max():.3f}]")
 print()
 
-for method in ["fp16", "int8", "int4", "turboquant_like"]:
+for method in ["fp16", "int8", "int4", "turboquant_mse"]:
     comp = create_compressor(method)
     errors = comp.compute_reconstruction_error(real_tensor)
     print(f"  {comp.name:45s}  cosine={errors['cosine_sim']:.4f}  snr={errors['snr_db']:.1f}dB  bpv={comp.estimate_bits_per_value():.2f}")
@@ -80,7 +80,7 @@ if output.kv_cache:
     print(f"  KV key tensor shape: {kv_key.shape}")
     print(f"  KV key range: [{kv_key.min():.3f}, {kv_key.max():.3f}]")
     print()
-    for method in ["fp16", "int8", "int4", "turboquant_like"]:
+    for method in ["fp16", "int8", "int4", "turboquant_mse"]:
         comp = create_compressor(method)
         errors = comp.compute_reconstruction_error(kv_key)
         print(f"  {comp.name:45s}  cosine={errors['cosine_sim']:.4f}  snr={errors['snr_db']:.1f}dB")
@@ -188,7 +188,7 @@ harness_tq = EvalHarness(
     router_engine="torch_cosine",
     top_k=3,
     max_new_tokens=32,
-    compressor=create_compressor("turboquant_like", bits=4, group_size=128, rotation="hadamard"),
+    compressor=create_compressor("turboquant_mse", bits=4, group_size=128, rotation="hadamard"),
     profiler=profiler_tq,
 )
 result_tq = harness_tq.evaluate([sample], run_id="tq_real")

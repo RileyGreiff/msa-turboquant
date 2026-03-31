@@ -87,9 +87,35 @@ def main() -> int:
         logger.info("Dry run complete. Config loaded and validated successfully.")
         return 0
 
-    # 7. Experiment dispatch (placeholder for future milestones)
+    # 7. Experiment dispatch
     logger.info(f"Experiment mode: {config.mode}")
-    logger.info("No experiment runners configured yet. Implement in Milestone 6+.")
+
+    if config.mode == "sweep":
+        from src.experiments.run_scale_sweep import ScaleSweep
+        from src.experiments.sweep_config import SweepConfig
+        from src.models.hf_model import HFModel
+
+        model = HFModel(config.model)
+        model.load()
+
+        sweep = ScaleSweep(
+            model=model,
+            config=SweepConfig(),
+            enable_profiling=True,
+        )
+        result = sweep.run()
+        sweep.save(result, resolved_paths["results_dir"])
+        logger.info(
+            f"Sweep complete: {len(result.records)} runs "
+            f"saved to {resolved_paths['results_dir']}"
+        )
+    else:
+        logger.info(
+            f"Mode '{config.mode}' is not a runnable experiment. "
+            "Set mode='sweep' for a default scale sweep, "
+            "or use demo_scale.py for custom configurations."
+        )
+
     return 0
 
 

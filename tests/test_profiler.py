@@ -12,7 +12,7 @@ import torch
 from src.compression.fp16 import FP16Compressor
 from src.compression.int4 import Int4Compressor
 from src.compression.int8 import Int8Compressor
-from src.compression.turboquant_like import TurboQuantLikeCompressor
+from src.compression.rotated_uniform import RotatedUniformCompressor
 from src.eval.profiler import (
     MemorySnapshot,
     PhaseRecord,
@@ -311,7 +311,7 @@ class TestCompressKVBlocks:
 
     def test_compress_kv_blocks_turboquant(self) -> None:
         model = DummyModel(hidden_size=64, num_layers=1)
-        compressor = TurboQuantLikeCompressor(bits=4, group_size=32)
+        compressor = RotatedUniformCompressor(bits=4, group_size=32)
         harness = EvalHarness(
             model=model,
             mode="compression_only",
@@ -472,7 +472,7 @@ class TestEvalHarnessWithProfiler:
 
     def test_config_snapshot_includes_compressor(self) -> None:
         model = self._make_model()
-        compressor = TurboQuantLikeCompressor(bits=4, group_size=128)
+        compressor = RotatedUniformCompressor(bits=4, group_size=128)
         harness = EvalHarness(
             model=model,
             mode="dense",
@@ -482,5 +482,5 @@ class TestEvalHarnessWithProfiler:
         sample = generate_niah_sample(num_blocks=3, block_chars=100, seed=42)
         result = harness.evaluate([sample], run_id="test_config")
         assert "compressor" in result.config
-        assert "turboquant_like" in result.config["compressor"]
+        assert "rotated_uniform" in result.config["compressor"]
         assert result.config["bits_per_value"] > 4.0

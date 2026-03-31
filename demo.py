@@ -18,7 +18,7 @@ print("PART 1: Compression quality comparison")
 print("=" * 60)
 
 t = torch.randn(4, 32, 64)
-for method in ["fp16", "int8", "int4", "turboquant_like"]:
+for method in ["fp16", "int8", "int4", "turboquant_mse"]:
     comp = create_compressor(method)
     errors = comp.compute_reconstruction_error(t)
     print(f"  {comp.name:40s}  cosine={errors['cosine_sim']:.4f}  snr={errors['snr_db']:.1f}dB  bpv={comp.estimate_bits_per_value():.2f}")
