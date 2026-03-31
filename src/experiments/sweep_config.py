@@ -11,7 +11,7 @@ Example YAML::
       bank_sizes: [10, 50, 100]
       block_chars: [200, 500]
       top_k_values: [3, 5, 10]
-      compression_methods: ["none", "int8", "int4", "turboquant_like"]
+      compression_methods: ["none", "int8", "int4", "turboquant_mse"]
       num_trials: 3
 """
 
@@ -36,7 +36,7 @@ class SweepConfig(BaseModel):
         block_chars: Character count per block (controls block size).
         top_k_values: Number of blocks to retrieve.
         compression_methods: Compression method names ("none", "fp16",
-            "int8", "int4", "turboquant_like").
+            "int8", "int4", "turboquant_mse").
         num_trials: Number of repeated trials per combination (averaged).
         seed_base: Base random seed; each trial offsets from this.
         router_engine: Router backend for sparse modes.
@@ -51,6 +51,7 @@ class SweepConfig(BaseModel):
     block_chars: list[int] = [200]
     top_k_values: list[int] = [3, 5]
     compression_methods: list[str] = ["none", "int4"]
+    task_types: list[str] = ["single_needle"]
     num_trials: int = 1
     seed_base: int = 42
     router_engine: str = "torch_cosine"
@@ -85,10 +86,11 @@ class SweepConfig(BaseModel):
             self.block_chars,
             self.top_k_values,
             self.compression_methods,
+            self.task_types,
         ))
 
         grid = []
-        for mode, bank_size, bchars, top_k, comp in combos:
+        for mode, bank_size, bchars, top_k, comp, task_type in combos:
             # Skip combos that don't make sense
             # Dense mode infeasible above a certain bank size (exceeds max_seq_len)
             if mode == "dense" and bank_size > self.exclude_dense_above:
@@ -112,6 +114,7 @@ class SweepConfig(BaseModel):
                 "block_chars": bchars,
                 "top_k": top_k,
                 "compression_method": comp,
+                "task_type": task_type,
             })
 
         return grid
@@ -144,6 +147,8 @@ class SweepRunRecord:
     trial: int = 0
     run_id: str = ""
     accuracy: float = 0.0
+    needle_accuracy: float = 0.0
+    distractor_confusions: int = 0
     recall_at_k: float = 0.0
     mrr: float = 0.0
     hit_rate: float = 0.0
@@ -161,6 +166,8 @@ class SweepRunRecord:
             "trial": self.trial,
             "run_id": self.run_id,
             "accuracy": round(self.accuracy, 4),
+            "needle_accuracy": round(self.needle_accuracy, 4),
+            "distractor_confusions": self.distractor_confusions,
             "recall_at_k": round(self.recall_at_k, 4),
             "mrr": round(self.mrr, 4),
             "hit_rate": round(self.hit_rate, 4),
@@ -204,7 +211,8 @@ class SweepResult:
 
         averaged = []
         metric_keys = [
-            "accuracy", "recall_at_k", "mrr", "hit_rate",
+            "accuracy", "needle_accuracy", "distractor_confusions",
+            "recall_at_k", "mrr", "hit_rate",
             "wall_time_ms", "peak_gpu_mb", "peak_ram_mb",
             "bytes_fetched", "compression_ratio", "tokens_per_second",
         ]

@@ -189,7 +189,7 @@ def plot_accuracy_vs_context_size(
         groups[label].append((total_tokens, r.get("accuracy", 0)))
 
     colors = {"FP16 (no compression)": "#1f77b4", "int8": "#ff7f0e",
-              "int4": "#2ca02c", "turboquant_like": "#d62728"}
+              "int4": "#2ca02c", "turboquant_mse": "#d62728"}
     for label, points in sorted(groups.items()):
         # Average accuracy at each token count
         by_size: dict[int, list[float]] = defaultdict(list)
@@ -249,7 +249,7 @@ def plot_max_context_comparison(
 
     labels = sorted(method_max.keys())
     values = [method_max[l] for l in labels]
-    colors = {"FP16": "#1f77b4", "int8": "#ff7f0e", "int4": "#2ca02c", "turboquant_like": "#d62728"}
+    colors = {"FP16": "#1f77b4", "int8": "#ff7f0e", "int4": "#2ca02c", "turboquant_mse": "#d62728"}
     bar_colors = [colors.get(l, "#888888") for l in labels]
 
     bars = ax.bar(labels, values, color=bar_colors)
@@ -313,7 +313,7 @@ def plot_compression_error_at_scale(
     setup_matplotlib()
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    target_methods = {"int4", "turboquant_like"}
+    target_methods = {"int4", "turboquant_mse"}
     groups: dict[str, list[tuple[int, float]]] = defaultdict(list)
     for r in records:
         comp = r.get("compression_method", "none")
@@ -321,7 +321,7 @@ def plot_compression_error_at_scale(
             continue
         groups[comp].append((r["bank_size"], r.get("accuracy", 0)))
 
-    colors = {"int4": "#2ca02c", "turboquant_like": "#d62728"}
+    colors = {"int4": "#2ca02c", "turboquant_mse": "#d62728"}
     for label, points in sorted(groups.items()):
         by_size: dict[int, list[float]] = defaultdict(list)
         for bs, acc in points:
@@ -394,7 +394,7 @@ def generate_sweep_plots(
             plot_recall_vs_bank_size(records, p)
             paths.append(p)
 
-        has_compression = any(r.get("compression_method") in ("int4", "turboquant_like") for r in records)
+        has_compression = any(r.get("compression_method") in ("int4", "turboquant_mse") for r in records)
         if has_compression:
             p = output_dir / "compression_error_at_scale.png"
             plot_compression_error_at_scale(records, p)

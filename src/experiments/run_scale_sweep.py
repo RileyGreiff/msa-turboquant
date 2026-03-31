@@ -29,6 +29,7 @@ from typing import Any
 from src.compression import create_compressor
 from src.eval.niah import generate_niah_sample
 from src.eval.profiler import RunProfiler
+from tq_benchmarks.tasks.multi_needle import generate_multi_needle_sample
 from src.eval.run_eval import EvalHarness
 from src.experiments.sweep_config import SweepConfig, SweepResult, SweepRunRecord
 from src.memory.bank_cache import BankCache
@@ -124,12 +125,23 @@ class ScaleSweep:
             profiler=profiler,
         )
 
-        # Generate sample
-        sample = generate_niah_sample(
-            num_blocks=bank_size,
-            block_chars=block_chars,
-            seed=seed,
-        )
+        # Generate sample based on task type
+        task_type = params.get("task_type", "single_needle")
+        if task_type in ("multi_needle", "multi_needle_distractor"):
+            distractor_mode = "close" if task_type == "multi_needle_distractor" else "none"
+            sample = generate_multi_needle_sample(
+                num_blocks=bank_size,
+                block_chars=block_chars,
+                num_needles=3,
+                distractor_mode=distractor_mode,
+                seed=seed,
+            )
+        else:
+            sample = generate_niah_sample(
+                num_blocks=bank_size,
+                block_chars=block_chars,
+                seed=seed,
+            )
 
         # Use cached bank if available (avoids rebuilding per run)
         prebuilt_bank = None
@@ -158,11 +170,24 @@ class ScaleSweep:
         # Get profiling data
         prof_report = profiler.report()
 
+        # Extract multi-needle metrics
+        avg_needle_acc = 0.0
+        total_confusions = 0
+        if eval_result.sample_results:
+            avg_needle_acc = sum(
+                s.needle_accuracy for s in eval_result.sample_results
+            ) / len(eval_result.sample_results)
+            total_confusions = sum(
+                s.distractor_confusions for s in eval_result.sample_results
+            )
+
         return SweepRunRecord(
             params=params,
             trial=trial,
             run_id=run_id,
             accuracy=eval_result.accuracy,
+            needle_accuracy=avg_needle_acc,
+            distractor_confusions=total_confusions,
             recall_at_k=retrieval.get("recall_at_k", 0.0),
             mrr=retrieval.get("mrr", 0.0),
             hit_rate=retrieval.get("hit_rate", 0.0),

@@ -95,9 +95,15 @@ class EvalSampleResult:
     generation_time_ms: float = 0.0
     bytes_fetched: int = 0
     compression_ratio: float = 0.0
+    # Multi-needle fields
+    task_type: str = "single_needle"
+    needles_found: int = 0
+    needles_total: int = 0
+    needle_accuracy: float = 0.0
+    distractor_confusions: int = 0
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "sample_id": self.sample_id,
             "mode": self.mode,
             "needle_answer": self.needle_answer,
@@ -109,8 +115,14 @@ class EvalSampleResult:
             "generation_time_ms": round(self.generation_time_ms, 2),
             "bytes_fetched": self.bytes_fetched,
             "compression_ratio": round(self.compression_ratio, 2),
+            "task_type": self.task_type,
+            "needles_found": self.needles_found,
+            "needles_total": self.needles_total,
+            "needle_accuracy": round(self.needle_accuracy, 4),
+            "distractor_confusions": self.distractor_confusions,
             **{f"retrieval_{k}": v for k, v in self.retrieval.items()},
         }
+        return d
 
 
 @dataclass
@@ -525,16 +537,16 @@ class EvalHarness:
         """Evaluate using KV injection: encode retrieved context as KV cache,
         optionally compress/decompress, then inject into attention for generation.
 
-        Handles all four KV injection modes:
-        - kv_inject: sparse retrieval, no compression
-        - kv_inject_compressed: sparse retrieval + compression
-        - oracle_kv_inject: oracle retrieval, no compression
-        - oracle_kv_inject_compressed: oracle retrieval + compression
+        Handles all four KV injection modes and both single/multi-needle tasks.
+        For multi-needle: builds KV once from retrieved context, then asks each
+        needle's question against that same KV payload.
         """
-        needle = sample.needles[0]
-        question = needle.question
-        expected = needle.answer
         gold_indices = sample.needle_block_indices
+        task_type = getattr(sample, "task_type", "single_needle")
+        is_multi = len(sample.needles) > 1
+
+        # For routing query, use first needle's question
+        primary_question = sample.needles[0].question
 
         # Determine engine and compression based on mode
         use_oracle = self._mode in ("oracle_kv_inject", "oracle_kv_inject_compressed")
@@ -554,7 +566,7 @@ class EvalHarness:
 
         # Route and fetch
         with self._profiler.phase("route") as phase_ctx:
-            query_vec = self._model.get_routing_vectors(question, pooling="mean")[0]
+            query_vec = self._model.get_routing_vectors(primary_question, pooling="mean")[0]
             fetch_result = fetcher.fetch(
                 query_vec, top_k=self._top_k, gold_indices=gold_indices
             )
@@ -577,7 +589,15 @@ class EvalHarness:
             sample.blocks[idx] for idx in fetch_result.retrieval.block_indices
         ]
         context_text = "Retrieved context:\n" + "\n\n".join(retrieved_texts)
-        framed_query = f"\nQuestion: {question}\nAnswer:"
+
+        # For multi-needle, ask all questions in one framed query
+        if is_multi:
+            questions_text = "\n".join(
+                f"Q{i+1}: {n.question}" for i, n in enumerate(sample.needles)
+            )
+            framed_query = f"\n{questions_text}\nAnswer each question with just the number:\n"
+        else:
+            framed_query = f"\nQuestion: {primary_question}\nAnswer:"
 
         compressor_for_inject = self._compressor if use_compression else None
         with self._profiler.phase("kv_encode"):
@@ -596,7 +616,7 @@ class EvalHarness:
             output_ids = self._model.generate(
                 query_tokens.input_ids,
                 attention_mask=payload.attention_mask,
-                max_new_tokens=self._max_new_tokens,
+                max_new_tokens=self._max_new_tokens * (len(sample.needles) if is_multi else 1),
                 past_key_values=payload.past_key_values,
                 position_ids=payload.position_ids,
             )
@@ -615,7 +635,30 @@ class EvalHarness:
 
         # Score
         with self._profiler.phase("score"):
-            correct = score_answer(model_answer, expected)
+            if is_multi:
+                needles_found = sum(
+                    1 for n in sample.needles
+                    if score_answer(model_answer, n.answer)
+                )
+                needles_total = len(sample.needles)
+                needle_accuracy = needles_found / needles_total if needles_total > 0 else 0.0
+                # Detect distractor confusions
+                distractor_confusions = 0
+                distractors = getattr(sample, "distractors", [])
+                if distractors:
+                    for d in distractors:
+                        if score_answer(model_answer, d.answer):
+                            distractor_confusions += 1
+                # "correct" = all needles found for multi-needle
+                correct = (needles_found == needles_total)
+                expected = "; ".join(n.answer for n in sample.needles)
+            else:
+                expected = sample.needles[0].answer
+                correct = score_answer(model_answer, expected)
+                needles_found = 1 if correct else 0
+                needles_total = 1
+                needle_accuracy = float(correct)
+                distractor_confusions = 0
 
         return EvalSampleResult(
             sample_id=sample.sample_id,
@@ -630,6 +673,11 @@ class EvalHarness:
             generation_time_ms=gen_time,
             bytes_fetched=bytes_fetched,
             compression_ratio=compression_ratio,
+            task_type=task_type,
+            needles_found=needles_found,
+            needles_total=needles_total,
+            needle_accuracy=needle_accuracy,
+            distractor_confusions=distractor_confusions,
         )
 
     def _compress_kv_blocks(self, kv_blocks: list) -> float:
