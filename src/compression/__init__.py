@@ -11,7 +11,7 @@ from src.compression.base import BaseCompressor, CompressedTensor
 from src.compression.fp16 import FP16Compressor
 from src.compression.int4 import Int4Compressor
 from src.compression.int8 import Int8Compressor
-from src.compression.turboquant_like import TurboQuantLikeCompressor
+from src.compression.turboquant_mse import TurboQuantMSECompressor
 
 if TYPE_CHECKING:
     from src.utils.config import CompressionConfig
@@ -21,34 +21,41 @@ def create_compressor(method: str = "none", **kwargs) -> BaseCompressor:
     """Factory function to create a compressor by method name.
 
     Args:
-        method: One of "none", "fp16", "int8", "int4", "turboquant_like".
+        method: One of "none", "fp16", "int8", "int4", "turboquant_mse",
+            or parameterized like "turboquant_mse_3b", "turboquant_mse_2b".
         **kwargs: Extra arguments passed to the compressor constructor.
 
     Returns:
         A BaseCompressor instance.
     """
-    if method in ("none", "fp16"):
+    # Parse parameterized TQ-MSE strings: "turboquant_mse_3b" -> method=turboquant_mse, bits=3
+    parsed_method = method
+    if method.startswith("turboquant_mse_") and method.endswith("b"):
+        bits_str = method[len("turboquant_mse_"):-1]
+        kwargs.setdefault("bits", int(bits_str))
+        parsed_method = "turboquant_mse"
+
+    if parsed_method in ("none", "fp16"):
         return FP16Compressor()
-    elif method == "int8":
+    elif parsed_method == "int8":
         return Int8Compressor(
             per_channel=kwargs.get("per_channel", False),
         )
-    elif method == "int4":
+    elif parsed_method == "int4":
         return Int4Compressor(
             group_size=kwargs.get("group_size", 128),
         )
-    elif method == "turboquant_like":
-        return TurboQuantLikeCompressor(
+    elif parsed_method == "turboquant_mse":
+        return TurboQuantMSECompressor(
             bits=kwargs.get("bits", 4),
-            group_size=kwargs.get("group_size", 128),
             rotation=kwargs.get("rotation", "random_orthogonal"),
             seed=kwargs.get("seed", 42),
-            residual_correction=kwargs.get("residual_correction", False),
         )
     else:
         raise ValueError(
             f"Unknown compression method: {method}. "
-            f"Use 'none', 'fp16', 'int8', 'int4', or 'turboquant_like'."
+            f"Use 'none', 'fp16', 'int8', 'int4', 'turboquant_mse', "
+            f"or 'turboquant_mse_Nb' (e.g., 'turboquant_mse_3b')."
         )
 
 
@@ -65,14 +72,12 @@ def create_compressor_from_config(config: CompressionConfig) -> BaseCompressor:
         return Int8Compressor(symmetric=config.int8.symmetric)
     elif method == "int4":
         return Int4Compressor(group_size=config.int4.group_size)
-    elif method == "turboquant_like":
-        tq = config.turboquant_like
-        return TurboQuantLikeCompressor(
+    elif method == "turboquant_mse":
+        tq = config.turboquant_mse
+        return TurboQuantMSECompressor(
             bits=tq.bits,
-            group_size=tq.group_size,
             rotation=tq.rotation,
             seed=tq.seed,
-            residual_correction=tq.residual_correction,
         )
     else:
         raise ValueError(f"Unknown compression method in config: {method}")

@@ -198,12 +198,14 @@ class TestInt4Compressor:
         recovered = comp.decompress(compressed)
         assert recovered.dtype == torch.float16
 
-    def test_values_in_range(self) -> None:
+    def test_data_is_bitpacked(self) -> None:
         comp = Int4Compressor(group_size=32)
         compressed = comp.compress(_kv_tensor())
-        assert compressed.data.min() >= -7
-        assert compressed.data.max() <= 7
+        assert compressed.data.dtype == torch.uint8
         assert compressed.bits == 4
+        # 2 values packed per byte
+        expected_bytes = compressed.metadata["num_values"] // 2
+        assert compressed.data.numel() == expected_bytes
 
     def test_reconstruction_quality(self) -> None:
         comp = Int4Compressor(group_size=32)

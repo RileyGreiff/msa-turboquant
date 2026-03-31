@@ -18,6 +18,7 @@ from __future__ import annotations
 import torch
 
 from src.compression.base import BaseCompressor, CompressedTensor
+from src.compression.bitpack import pack, unpack
 
 
 class Int4Compressor(BaseCompressor):
@@ -59,8 +60,13 @@ class Int4Compressor(BaseCompressor):
         quantized_flat = quantized.reshape(*leading_shape, padded_dim)
         scales_flat = scales.squeeze(-1)  # (..., num_groups)
 
+        # Bit-pack: shift [-7,7] -> [0,14] unsigned, then pack 2 per byte
+        quantized_shape = quantized_flat.shape
+        unsigned = (quantized_flat + 7).to(torch.uint8)
+        packed = pack(unsigned, bits=4)
+
         return CompressedTensor(
-            data=quantized_flat,
+            data=packed,
             scales=scales_flat,
             original_shape=original_shape,
             original_dtype=original_dtype,
@@ -69,16 +75,25 @@ class Int4Compressor(BaseCompressor):
                 "group_size": gs,
                 "pad_amount": pad_amount,
                 "num_groups": num_groups,
+                "quantized_shape": quantized_shape,
+                "num_values": unsigned.numel(),
             },
         )
 
     def decompress(self, compressed: CompressedTensor) -> torch.Tensor:
-        quantized = compressed.data.float()
-        scales = compressed.scales  # (..., num_groups)
-        gs = compressed.metadata["group_size"]
-        pad_amount = compressed.metadata["pad_amount"]
+        # Unpack bit-packed data back to int8 quantized values
+        meta = compressed.metadata
+        gs = meta["group_size"]
+        pad_amount = meta["pad_amount"]
         original_shape = compressed.original_shape
+        quantized_shape = meta["quantized_shape"]
+        num_values = meta["num_values"]
 
+        unsigned = unpack(compressed.data, bits=4, num_values=num_values)
+        quantized = (unsigned.to(torch.int8) - 7).float()
+        quantized = quantized.reshape(quantized_shape)
+
+        scales = compressed.scales  # (..., num_groups)
         leading_shape = quantized.shape[:-1]
         padded_dim = quantized.shape[-1]
         num_groups = padded_dim // gs

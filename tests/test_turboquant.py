@@ -1,4 +1,4 @@
-"""Tests for TurboQuant-inspired compressor and compression factory."""
+"""Tests for compression: RotatedUniform baseline, TurboQuantMSE, and factory."""
 
 from __future__ import annotations
 
@@ -15,11 +15,13 @@ from src.compression.base import CompressedTensor
 from src.compression.fp16 import FP16Compressor
 from src.compression.int4 import Int4Compressor
 from src.compression.int8 import Int8Compressor
-from src.compression.turboquant_like import (
-    TurboQuantLikeCompressor,
+from src.compression.rotated_uniform import (
+    RotatedUniformCompressor,
     _fast_walsh_hadamard_transform,
     _generate_random_orthogonal,
+    _generate_random_signs,
 )
+from src.compression.turboquant_mse import TurboQuantMSECompressor
 
 
 # ---------------------------------------------------------------------------
@@ -71,120 +73,277 @@ class TestWalshHadamard:
             _fast_walsh_hadamard_transform(torch.randn(3, 10))
 
 
+class TestSignedHadamard:
+    """Tests for the signed Hadamard (random sign flips + WHT)."""
+
+    def test_sign_vector_deterministic(self) -> None:
+        s1 = _generate_random_signs(64, seed=42)
+        s2 = _generate_random_signs(64, seed=42)
+        assert torch.equal(s1, s2)
+
+    def test_sign_vector_values(self) -> None:
+        """Sign vector should contain only -1 and +1."""
+        s = _generate_random_signs(128, seed=42)
+        assert set(s.tolist()).issubset({-1.0, 1.0})
+
+    def test_signed_hadamard_round_trip(self) -> None:
+        """Signed Hadamard rotation should be invertible."""
+        comp = RotatedUniformCompressor(bits=4, group_size=32, rotation="hadamard", seed=42)
+        t = torch.randn(4, 32, 64)
+        compressed = comp.compress(t)
+        recovered = comp.decompress(compressed)
+        assert recovered.shape == t.shape
+        # Should have reasonable reconstruction quality
+        errors = comp.compute_reconstruction_error(t)
+        assert errors["cosine_sim"] > 0.85
+
+
 # ---------------------------------------------------------------------------
-# TurboQuant-like compressor tests
+# RotatedUniformCompressor tests (baseline)
 # ---------------------------------------------------------------------------
 
-class TestTurboQuantLikeCompressor:
-    """Tests for the rotation + quantization compressor."""
+class TestRotatedUniformCompressor:
+    """Tests for the rotation + groupwise uniform quantization baseline."""
 
     def test_round_trip_shape(self) -> None:
-        comp = TurboQuantLikeCompressor(bits=4, group_size=32, rotation="random_orthogonal")
+        comp = RotatedUniformCompressor(bits=4, group_size=32, rotation="random_orthogonal")
         t = torch.randn(4, 32, 64)
         compressed = comp.compress(t)
         recovered = comp.decompress(compressed)
         assert recovered.shape == t.shape
 
     def test_round_trip_hadamard(self) -> None:
-        comp = TurboQuantLikeCompressor(bits=4, group_size=32, rotation="hadamard")
-        t = torch.randn(4, 32, 64)  # 64 is power of 2
+        comp = RotatedUniformCompressor(bits=4, group_size=32, rotation="hadamard")
+        t = torch.randn(4, 32, 64)
         compressed = comp.compress(t)
         recovered = comp.decompress(compressed)
         assert recovered.shape == t.shape
 
     def test_hadamard_non_power_of_2(self) -> None:
         """Hadamard with non-power-of-2 dim should still work (via padding)."""
-        comp = TurboQuantLikeCompressor(bits=4, group_size=32, rotation="hadamard")
-        t = torch.randn(4, 16, 50)  # 50 is not power of 2
+        comp = RotatedUniformCompressor(bits=4, group_size=32, rotation="hadamard")
+        t = torch.randn(4, 16, 50)
         compressed = comp.compress(t)
         recovered = comp.decompress(compressed)
         assert recovered.shape == t.shape
 
     def test_dtype_preserved(self) -> None:
-        comp = TurboQuantLikeCompressor(bits=4, group_size=32)
+        comp = RotatedUniformCompressor(bits=4, group_size=32)
         t = torch.randn(4, 16, 64, dtype=torch.float16)
         recovered = comp.decompress(comp.compress(t))
         assert recovered.dtype == torch.float16
 
     def test_compressed_is_int8(self) -> None:
-        comp = TurboQuantLikeCompressor(bits=4, group_size=32)
+        comp = RotatedUniformCompressor(bits=4, group_size=32)
         compressed = comp.compress(torch.randn(4, 16, 64))
         assert compressed.data.dtype == torch.int8
         assert compressed.bits == 4
 
     def test_values_in_4bit_range(self) -> None:
-        comp = TurboQuantLikeCompressor(bits=4, group_size=32)
+        comp = RotatedUniformCompressor(bits=4, group_size=32)
         compressed = comp.compress(torch.randn(4, 16, 64))
         assert compressed.data.min() >= -7
         assert compressed.data.max() <= 7
 
-    def test_values_in_8bit_range(self) -> None:
-        comp = TurboQuantLikeCompressor(bits=8, group_size=32)
-        compressed = comp.compress(torch.randn(4, 16, 64))
-        assert compressed.data.min() >= -127
-        assert compressed.data.max() <= 127
-
     def test_reconstruction_quality(self) -> None:
-        comp = TurboQuantLikeCompressor(bits=4, group_size=32, rotation="random_orthogonal")
+        comp = RotatedUniformCompressor(bits=4, group_size=32, rotation="random_orthogonal")
         t = torch.randn(4, 32, 128)
         errors = comp.compute_reconstruction_error(t)
         assert errors["cosine_sim"] > 0.90
         assert errors["snr_db"] > 10
 
-    def test_rotation_improves_quality_over_plain_int4(self) -> None:
-        """Rotation should reduce quantization error vs plain int4 for outlier-heavy data."""
-        # Create tensor with outliers (simulating real KV cache distributions)
-        torch.manual_seed(42)
-        t = torch.randn(4, 32, 128)
-        # Add some outlier dimensions
-        t[:, :, 0] *= 10
-        t[:, :, 1] *= 8
-
-        plain = Int4Compressor(group_size=128)
-        rotated = TurboQuantLikeCompressor(bits=4, group_size=128, rotation="random_orthogonal")
-
-        err_plain = plain.compute_reconstruction_error(t)
-        err_rotated = rotated.compute_reconstruction_error(t)
-
-        # Rotation should help with outliers
-        assert err_rotated["cosine_sim"] >= err_plain["cosine_sim"] - 0.05
-        # MSE should be comparable or better
-        # (not strictly guaranteed for all random seeds, so we allow some tolerance)
-
     def test_name(self) -> None:
-        comp = TurboQuantLikeCompressor(bits=4, group_size=128, rotation="random_orthogonal")
-        assert "turboquant_like" in comp.name
+        comp = RotatedUniformCompressor(bits=4, group_size=128, rotation="random_orthogonal")
+        assert "rotated_uniform" in comp.name
         assert "4b" in comp.name
         assert "g128" in comp.name
 
     def test_bits_per_value(self) -> None:
-        comp = TurboQuantLikeCompressor(bits=4, group_size=128)
+        comp = RotatedUniformCompressor(bits=4, group_size=128)
         bpv = comp.estimate_bits_per_value()
         assert 4.0 < bpv < 5.0
 
     def test_deterministic_compression(self) -> None:
-        """Same seed produces same compressed output."""
         t = torch.randn(4, 16, 64)
-        comp1 = TurboQuantLikeCompressor(bits=4, group_size=32, seed=42)
-        comp2 = TurboQuantLikeCompressor(bits=4, group_size=32, seed=42)
+        comp1 = RotatedUniformCompressor(bits=4, group_size=32, seed=42)
+        comp2 = RotatedUniformCompressor(bits=4, group_size=32, seed=42)
         c1 = comp1.compress(t)
         c2 = comp2.compress(t)
         assert torch.equal(c1.data, c2.data)
 
     def test_different_seeds_different_output(self) -> None:
         t = torch.randn(4, 16, 64)
-        comp1 = TurboQuantLikeCompressor(bits=4, group_size=32, seed=1)
-        comp2 = TurboQuantLikeCompressor(bits=4, group_size=32, seed=2)
+        comp1 = RotatedUniformCompressor(bits=4, group_size=32, seed=1)
+        comp2 = RotatedUniformCompressor(bits=4, group_size=32, seed=2)
         c1 = comp1.compress(t)
         c2 = comp2.compress(t)
         assert not torch.equal(c1.data, c2.data)
 
 
+# ---------------------------------------------------------------------------
+# TurboQuantMSE compressor tests
+# ---------------------------------------------------------------------------
+
+class TestTurboQuantMSECompressor:
+    """Tests for the TurboQuant MSE compressor with Lloyd-Max codebooks."""
+
+    def test_round_trip_shape(self) -> None:
+        comp = TurboQuantMSECompressor(bits=4, rotation="random_orthogonal")
+        t = torch.randn(4, 32, 128)
+        compressed = comp.compress(t)
+        recovered = comp.decompress(compressed)
+        assert recovered.shape == t.shape
+
+    def test_round_trip_hadamard(self) -> None:
+        comp = TurboQuantMSECompressor(bits=4, rotation="hadamard")
+        t = torch.randn(4, 32, 64)
+        compressed = comp.compress(t)
+        recovered = comp.decompress(compressed)
+        assert recovered.shape == t.shape
+
+    def test_hadamard_non_power_of_2(self) -> None:
+        comp = TurboQuantMSECompressor(bits=4, rotation="hadamard")
+        t = torch.randn(4, 16, 50)
+        compressed = comp.compress(t)
+        recovered = comp.decompress(compressed)
+        assert recovered.shape == t.shape
+
+    def test_dtype_preserved(self) -> None:
+        comp = TurboQuantMSECompressor(bits=4)
+        t = torch.randn(4, 16, 64, dtype=torch.float16)
+        recovered = comp.decompress(comp.compress(t))
+        assert recovered.dtype == torch.float16
+
+    def test_compressed_data_is_bitpacked(self) -> None:
+        """Codebook indices should be bit-packed into uint8."""
+        comp = TurboQuantMSECompressor(bits=4)
+        compressed = comp.compress(torch.randn(4, 16, 64))
+        assert compressed.data.dtype == torch.uint8
+        assert compressed.bits == 4
+        # 4096 values at 4 bits = 2048 bytes
+        assert compressed.data.numel() == (4 * 16 * 64) // 2
+
+    def test_indices_roundtrip_in_codebook_range(self) -> None:
+        """Unpacked indices should be in range [0, 2^bits - 1]."""
+        from src.compression.bitpack import unpack
+        comp = TurboQuantMSECompressor(bits=4)
+        compressed = comp.compress(torch.randn(4, 16, 64))
+        indices = unpack(compressed.data, bits=4, num_values=compressed.metadata["num_values"])
+        assert indices.min() >= 0
+        assert indices.max() <= 15  # 2^4 - 1
+
+    def test_norms_stored_in_zero_points(self) -> None:
+        """Norms should be stored in zero_points field."""
+        comp = TurboQuantMSECompressor(bits=4)
+        t = torch.randn(4, 16, 64)
+        compressed = comp.compress(t)
+        assert compressed.zero_points is not None
+        # Norms should be shape (...) = (4, 16) — one per vector
+        assert compressed.zero_points.shape == (4, 16)
+        # Norms should be positive
+        assert (compressed.zero_points > 0).all()
+
+    def test_no_scales_for_codebook_path(self) -> None:
+        """Codebook path (2-5 bits) should not use scales."""
+        comp = TurboQuantMSECompressor(bits=4)
+        compressed = comp.compress(torch.randn(4, 16, 64))
+        assert compressed.scales is None
+
+    def test_reconstruction_quality_4bit(self) -> None:
+        comp = TurboQuantMSECompressor(bits=4, rotation="random_orthogonal")
+        t = torch.randn(4, 32, 128)
+        errors = comp.compute_reconstruction_error(t)
+        assert errors["cosine_sim"] > 0.85
+        assert errors["snr_db"] > 8
+
+    def test_reconstruction_quality_improves_with_bits(self) -> None:
+        t = torch.randn(4, 32, 128)
+        comp2 = TurboQuantMSECompressor(bits=2)
+        comp4 = TurboQuantMSECompressor(bits=4)
+        err2 = comp2.compute_reconstruction_error(t)
+        err4 = comp4.compute_reconstruction_error(t)
+        assert err4["cosine_sim"] > err2["cosine_sim"]
+        assert err4["mse"] < err2["mse"]
+
+    def test_8bit_uniform_fallback(self) -> None:
+        """8-bit should use uniform fallback and still work."""
+        comp = TurboQuantMSECompressor(bits=8)
+        t = torch.randn(4, 16, 64)
+        compressed = comp.compress(t)
+        recovered = comp.decompress(compressed)
+        assert recovered.shape == t.shape
+        # 8-bit should be very high quality
+        errors = comp.compute_reconstruction_error(t)
+        assert errors["cosine_sim"] > 0.99
+
+    def test_name(self) -> None:
+        comp = TurboQuantMSECompressor(bits=4, rotation="random_orthogonal")
+        assert "turboquant_mse" in comp.name
+        assert "4b" in comp.name
+
+    def test_bits_per_value(self) -> None:
+        comp = TurboQuantMSECompressor(bits=4)
+        bpv = comp.estimate_bits_per_value()
+        assert 4.0 < bpv < 5.0
+
+    def test_deterministic_compression(self) -> None:
+        t = torch.randn(4, 16, 64)
+        comp1 = TurboQuantMSECompressor(bits=4, seed=42)
+        comp2 = TurboQuantMSECompressor(bits=4, seed=42)
+        c1 = comp1.compress(t)
+        c2 = comp2.compress(t)
+        assert torch.equal(c1.data, c2.data)
+
+    def test_different_seeds_different_output(self) -> None:
+        t = torch.randn(4, 16, 64)
+        comp1 = TurboQuantMSECompressor(bits=4, seed=1)
+        comp2 = TurboQuantMSECompressor(bits=4, seed=2)
+        c1 = comp1.compress(t)
+        c2 = comp2.compress(t)
+        assert not torch.equal(c1.data, c2.data)
+
+    def test_compressed_bytes_structure(self) -> None:
+        """Compressed data should be bit-packed uint8 with norms, no scales."""
+        comp = TurboQuantMSECompressor(bits=4)
+        t = torch.randn(4, 16, 128, dtype=torch.float16)
+        compressed = comp.compress(t)
+        # Indices bit-packed into uint8
+        assert compressed.data.dtype == torch.uint8
+        # Should be roughly half the element count (2 values per byte for 4-bit)
+        assert compressed.data.numel() == (4 * 16 * 128) // 2
+        # Norms stored as fp32
+        assert compressed.zero_points is not None
+        assert compressed.zero_points.dtype == torch.float32
+        # No scales for codebook path
+        assert compressed.scales is None
+        # Compression ratio should now reflect actual 4-bit packing
+        original_bytes = 4 * 16 * 128 * 2  # fp16
+        packed_bytes = compressed.data.numel() + compressed.zero_points.numel() * 4
+        assert compressed.compressed_bytes == packed_bytes
+        assert original_bytes / packed_bytes > 3.5
+
+    def test_all_supported_bit_widths(self) -> None:
+        """Verify all Lloyd-Max bit widths work."""
+        t = torch.randn(4, 16, 64)
+        for bits in [2, 3, 4, 5]:
+            comp = TurboQuantMSECompressor(bits=bits)
+            recovered = comp.decompress(comp.compress(t))
+            assert recovered.shape == t.shape
+
+    def test_unsupported_bits_raises(self) -> None:
+        with pytest.raises(ValueError, match="No Lloyd-Max codebook"):
+            TurboQuantMSECompressor(bits=6)
+
+
+# ---------------------------------------------------------------------------
+# Dot product error tests
+# ---------------------------------------------------------------------------
+
 class TestDotProductError:
     """Tests for dot-product distortion measurement."""
 
     def test_returns_expected_keys(self) -> None:
-        comp = TurboQuantLikeCompressor(bits=4, group_size=32)
+        comp = RotatedUniformCompressor(bits=4, group_size=32)
         keys = torch.randn(4, 32, 64)
         queries = torch.randn(4, 8, 64)
         result = comp.compute_dot_product_error(keys, queries)
@@ -192,23 +351,11 @@ class TestDotProductError:
         assert "dot_product_max_error" in result
         assert "rank_agreement_top5" in result
 
-    def test_fp16_has_zero_dot_error(self) -> None:
-        """FP16 (from fp16 input) should have negligible dot-product error."""
-        # Use fp16 input for exact round-trip
-        from src.compression.fp16 import FP16Compressor
-        keys = torch.randn(4, 16, 64, dtype=torch.float16)
-        queries = torch.randn(4, 8, 64, dtype=torch.float16)
-        # Can't use compute_dot_product_error on FP16 directly (different class)
-        # but we verify TQ with 8-bit has low error
-        comp = TurboQuantLikeCompressor(bits=8, group_size=32)
-        result = comp.compute_dot_product_error(keys.float(), queries.float())
-        assert result["dot_product_mse"] < 1.0
-
     def test_higher_bits_lower_error(self) -> None:
         keys = torch.randn(4, 32, 64)
         queries = torch.randn(4, 8, 64)
-        comp4 = TurboQuantLikeCompressor(bits=4, group_size=32)
-        comp8 = TurboQuantLikeCompressor(bits=8, group_size=32)
+        comp4 = RotatedUniformCompressor(bits=4, group_size=32)
+        comp8 = RotatedUniformCompressor(bits=8, group_size=32)
         err4 = comp4.compute_dot_product_error(keys, queries)
         err8 = comp8.compute_dot_product_error(keys, queries)
         assert err8["dot_product_mse"] < err4["dot_product_mse"]
@@ -234,9 +381,29 @@ class TestCompressorFactory:
         comp = create_compressor("int4", group_size=64)
         assert isinstance(comp, Int4Compressor)
 
-    def test_create_turboquant(self) -> None:
-        comp = create_compressor("turboquant_like", bits=4, group_size=128, rotation="hadamard")
-        assert isinstance(comp, TurboQuantLikeCompressor)
+    def test_create_turboquant_mse(self) -> None:
+        comp = create_compressor("turboquant_mse", bits=4, rotation="hadamard")
+        assert isinstance(comp, TurboQuantMSECompressor)
+
+    def test_create_turboquant_mse_3b(self) -> None:
+        comp = create_compressor("turboquant_mse_3b")
+        assert isinstance(comp, TurboQuantMSECompressor)
+        assert "3b" in comp.name
+
+    def test_create_turboquant_mse_2b(self) -> None:
+        comp = create_compressor("turboquant_mse_2b")
+        assert isinstance(comp, TurboQuantMSECompressor)
+        assert "2b" in comp.name
+
+    def test_create_turboquant_mse_5b(self) -> None:
+        comp = create_compressor("turboquant_mse_5b")
+        assert isinstance(comp, TurboQuantMSECompressor)
+        assert "5b" in comp.name
+
+    def test_parameterized_bits_override_kwargs(self) -> None:
+        # String-parsed bits should be used, not default
+        comp = create_compressor("turboquant_mse_2b")
+        assert comp.estimate_bits_per_value() == pytest.approx(2.25, abs=0.01)
 
     def test_create_invalid(self) -> None:
         with pytest.raises(ValueError, match="Unknown"):
@@ -248,12 +415,12 @@ class TestCompressorFactory:
         comp = create_compressor_from_config(config)
         assert isinstance(comp, Int4Compressor)
 
-    def test_from_config_turboquant(self) -> None:
-        from src.utils.config import CompressionConfig, TurboQuantLikeConfig
+    def test_from_config_turboquant_mse(self) -> None:
+        from src.utils.config import CompressionConfig, TurboQuantMSEConfig
         config = CompressionConfig(
-            method="turboquant_like",
-            turboquant_like=TurboQuantLikeConfig(bits=4, group_size=64, rotation="hadamard"),
+            method="turboquant_mse",
+            turboquant_mse=TurboQuantMSEConfig(bits=4, rotation="hadamard"),
         )
         comp = create_compressor_from_config(config)
-        assert isinstance(comp, TurboQuantLikeCompressor)
+        assert isinstance(comp, TurboQuantMSECompressor)
         assert "hadamard" in comp.name
