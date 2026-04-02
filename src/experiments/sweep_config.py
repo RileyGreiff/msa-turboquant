@@ -147,9 +147,11 @@ class SweepRunRecord:
     trial: int = 0
     run_id: str = ""
     accuracy: float = 0.0
+    exact_match: float = 0.0
     needle_accuracy: float = 0.0
     distractor_confusions: int = 0
     recall_at_k: float = 0.0
+    model_answer: str = ""
     mrr: float = 0.0
     hit_rate: float = 0.0
     wall_time_ms: float = 0.0
@@ -166,7 +168,9 @@ class SweepRunRecord:
             "trial": self.trial,
             "run_id": self.run_id,
             "accuracy": round(self.accuracy, 4),
+            "exact_match": round(self.exact_match, 4),
             "needle_accuracy": round(self.needle_accuracy, 4),
+            "model_answer": self.model_answer,
             "distractor_confusions": self.distractor_confusions,
             "recall_at_k": round(self.recall_at_k, 4),
             "mrr": round(self.mrr, 4),
@@ -211,7 +215,7 @@ class SweepResult:
 
         averaged = []
         metric_keys = [
-            "accuracy", "needle_accuracy", "distractor_confusions",
+            "accuracy", "exact_match", "needle_accuracy", "distractor_confusions",
             "recall_at_k", "mrr", "hit_rate",
             "wall_time_ms", "peak_gpu_mb", "peak_ram_mb",
             "bytes_fetched", "compression_ratio", "tokens_per_second",

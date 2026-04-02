@@ -88,6 +88,7 @@ class EvalSampleResult:
     needle_answer: str = ""
     model_answer: str = ""
     correct: bool = False
+    exact_match: bool = False
     retrieval: dict = field(default_factory=dict)
     context_chars: int = 0
     num_retrieved: int = 0
@@ -169,19 +170,31 @@ def score_answer(model_answer: str, expected_answer: str) -> bool:
     false negatives.  For numeric answers (common in NIAH), also
     strips all spaces/punctuation from both strings before comparing.
     """
+    return score_answer_detailed(model_answer, expected_answer)[0]
+
+
+def score_answer_detailed(model_answer: str, expected_answer: str) -> tuple[bool, bool]:
+    """Score with detail: returns (correct, exact_match).
+
+    exact_match is True only if the expected answer appears as-is (no normalization).
+    correct is True if it matches after whitespace/punctuation normalization.
+    """
     answer = model_answer.lower().strip()
     expected = expected_answer.lower().strip()
 
     # Direct substring match
     if expected in answer:
-        return True
+        return True, True
 
     # Normalize: collapse whitespace and strip punctuation, then retry.
     # Handles "550 6" -> "5506", "55,06" -> "5506", etc.
     import re
     answer_norm = re.sub(r"[\s.,;:!?'\"-]+", "", answer)
     expected_norm = re.sub(r"[\s.,;:!?'\"-]+", "", expected)
-    return expected_norm in answer_norm
+    if expected_norm in answer_norm:
+        return True, False
+
+    return False, False
 
 
 def _build_text_blocks_from_niah(sample: NIAHSample) -> list[TextBlock]:
@@ -525,7 +538,7 @@ class EvalHarness:
 
         # Score
         with self._profiler.phase("score"):
-            correct = score_answer(model_answer, expected)
+            correct, exact_match = score_answer_detailed(model_answer, expected)
 
         return EvalSampleResult(
             sample_id=sample.sample_id,
@@ -533,6 +546,7 @@ class EvalHarness:
             needle_answer=expected,
             model_answer=model_answer,
             correct=correct,
+            exact_match=exact_match,
             retrieval=retrieval_metrics_dict,
             context_chars=assembled.context_chars,
             num_retrieved=num_retrieved,
@@ -650,10 +664,12 @@ class EvalHarness:
         # Score
         with self._profiler.phase("score"):
             if is_multi:
-                needles_found = sum(
-                    1 for n in sample.needles
-                    if score_answer(model_answer, n.answer)
-                )
+                needles_found = 0
+                exact_needles = 0
+                for n in sample.needles:
+                    c, e = score_answer_detailed(model_answer, n.answer)
+                    needles_found += int(c)
+                    exact_needles += int(e)
                 needles_total = len(sample.needles)
                 needle_accuracy = needles_found / needles_total if needles_total > 0 else 0.0
                 # Detect distractor confusions
@@ -665,10 +681,11 @@ class EvalHarness:
                             distractor_confusions += 1
                 # "correct" = all needles found for multi-needle
                 correct = (needles_found == needles_total)
+                exact_match = (exact_needles == needles_total)
                 expected = "; ".join(n.answer for n in sample.needles)
             else:
                 expected = sample.needles[0].answer
-                correct = score_answer(model_answer, expected)
+                correct, exact_match = score_answer_detailed(model_answer, expected)
                 needles_found = 1 if correct else 0
                 needles_total = 1
                 needle_accuracy = float(correct)
@@ -680,6 +697,7 @@ class EvalHarness:
             needle_answer=expected,
             model_answer=model_answer,
             correct=correct,
+            exact_match=exact_match,
             retrieval=retrieval_metrics_dict,
             context_chars=len(context_text),
             num_retrieved=num_retrieved,

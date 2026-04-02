@@ -205,9 +205,11 @@ class ScaleSweep:
         # Get profiling data
         prof_report = profiler.report()
 
-        # Extract multi-needle metrics
+        # Extract multi-needle metrics and generation quality
         avg_needle_acc = 0.0
         total_confusions = 0
+        avg_exact = 0.0
+        model_answer = ""
         if eval_result.sample_results:
             avg_needle_acc = sum(
                 s.needle_accuracy for s in eval_result.sample_results
@@ -215,14 +217,20 @@ class ScaleSweep:
             total_confusions = sum(
                 s.distractor_confusions for s in eval_result.sample_results
             )
+            avg_exact = sum(
+                float(s.exact_match) for s in eval_result.sample_results
+            ) / len(eval_result.sample_results)
+            model_answer = eval_result.sample_results[0].model_answer
 
         return SweepRunRecord(
             params=params,
             trial=trial,
             run_id=run_id,
             accuracy=eval_result.accuracy,
+            exact_match=avg_exact,
             needle_accuracy=avg_needle_acc,
             distractor_confusions=total_confusions,
+            model_answer=model_answer,
             recall_at_k=retrieval.get("recall_at_k", 0.0),
             mrr=retrieval.get("mrr", 0.0),
             hit_rate=retrieval.get("hit_rate", 0.0),
