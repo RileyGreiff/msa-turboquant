@@ -31,7 +31,7 @@ from src.utils.io_utils import ensure_dir, save_csv, save_json
 BANK_SIZES = [4000, 8000, 16000]
 BLOCK_CHARS = 500
 TOP_K_VALUES = [10, 50, 100, 200]
-COMPRESSION_METHODS = ["none", "int8", "int4", "turboquant_mse"]
+COMPRESSION_METHODS = ["none", "int8", "int4", "turboquant_mse", "kivi"]
 TASK_TYPES = ["single_needle"]
 TOKENS_PER_BLOCK = 125  # ~500 chars
 SEED = 42
@@ -73,17 +73,21 @@ print("=" * 70)
 cache = BankCache(CACHE_DIR, model, extraction_mode="direct")
 
 for num_blocks in BANK_SIZES:
-    if cache.exists(num_blocks, BLOCK_CHARS, SEED):
-        print(f"  {num_blocks:5d} blocks: CACHED (skipping build)")
-    else:
-        start = time.perf_counter()
-        print(f"  {num_blocks:5d} blocks: building...", end="", flush=True)
-        cache.get_or_build(num_blocks, BLOCK_CHARS, SEED)
-        elapsed = time.perf_counter() - start
-        print(f" done in {elapsed:.1f}s")
+    for trial in range(NUM_TRIALS):
+        seed = SEED + trial
+        if cache.exists(num_blocks, BLOCK_CHARS, seed):
+            print(f"  {num_blocks:5d} blocks (seed={seed}): CACHED")
+        else:
+            start = time.perf_counter()
+            print(f"  {num_blocks:5d} blocks (seed={seed}): building (routing-only)...", end="", flush=True)
+            # save_kv=False: only save routing vectors (~63 MB per 8K blocks vs ~100 GB KV).
+            # KV injection modes re-encode from text, so stored KV is never used.
+            cache.get_or_build(num_blocks, BLOCK_CHARS, seed, save_kv=False)
+            elapsed = time.perf_counter() - start
+            print(f" done in {elapsed:.1f}s")
 
-    gc.collect()
-    torch.cuda.empty_cache()
+        gc.collect()
+        torch.cuda.empty_cache()
 
 print()
 
@@ -183,8 +187,8 @@ print()
 print("  A. ORACLE ACCURACY: Does compression hold up at high top-k?")
 for bs in BANK_SIZES:
     print(f"\n  Bank size = {bs} ({bs * TOKENS_PER_BLOCK:,} tokens stored)")
-    print(f"  {'top_k':>6s}  {'FP16':>6s}  {'INT8':>6s}  {'INT4':>6s}  {'TQ-4b':>6s}")
-    print(f"  {'-'*6}  {'-'*6}  {'-'*6}  {'-'*6}  {'-'*6}")
+    print(f"  {'top_k':>6s}  {'FP16':>6s}  {'INT8':>6s}  {'INT4':>6s}  {'TQ-4b':>6s}  {'KIVI':>6s}")
+    print(f"  {'-'*6}  {'-'*6}  {'-'*6}  {'-'*6}  {'-'*6}  {'-'*6}")
     for k in TOP_K_VALUES:
         injected_tokens = k * TOKENS_PER_BLOCK
         row = f"  {k:6d}"
@@ -193,6 +197,7 @@ for bs in BANK_SIZES:
             ("oracle_kv_inject_compressed", "int8"),
             ("oracle_kv_inject_compressed", "int4"),
             ("oracle_kv_inject_compressed", "turboquant_mse"),
+            ("oracle_kv_inject_compressed", "kivi"),
         ]:
             r = _get(mode, comp, bs, k)
             if r:
@@ -206,8 +211,8 @@ print()
 print("  B. EXACT MATCH (no normalization needed — clean generation)")
 for bs in BANK_SIZES:
     print(f"\n  Bank size = {bs}")
-    print(f"  {'top_k':>6s}  {'FP16':>6s}  {'INT8':>6s}  {'INT4':>6s}  {'TQ-4b':>6s}")
-    print(f"  {'-'*6}  {'-'*6}  {'-'*6}  {'-'*6}  {'-'*6}")
+    print(f"  {'top_k':>6s}  {'FP16':>6s}  {'INT8':>6s}  {'INT4':>6s}  {'TQ-4b':>6s}  {'KIVI':>6s}")
+    print(f"  {'-'*6}  {'-'*6}  {'-'*6}  {'-'*6}  {'-'*6}  {'-'*6}")
     for k in TOP_K_VALUES:
         row = f"  {k:6d}"
         for mode, comp in [
@@ -215,6 +220,7 @@ for bs in BANK_SIZES:
             ("oracle_kv_inject_compressed", "int8"),
             ("oracle_kv_inject_compressed", "int4"),
             ("oracle_kv_inject_compressed", "turboquant_mse"),
+            ("oracle_kv_inject_compressed", "kivi"),
         ]:
             r = _get(mode, comp, bs, k)
             if r:
@@ -243,8 +249,8 @@ print()
 print("  D. SPARSE + COMPRESSION: End-to-end accuracy (retrieval + compression)")
 for bs in BANK_SIZES:
     print(f"\n  Bank size = {bs}")
-    print(f"  {'top_k':>6s}  {'FP16':>6s}  {'INT8':>6s}  {'INT4':>6s}  {'TQ-4b':>6s}")
-    print(f"  {'-'*6}  {'-'*6}  {'-'*6}  {'-'*6}  {'-'*6}")
+    print(f"  {'top_k':>6s}  {'FP16':>6s}  {'INT8':>6s}  {'INT4':>6s}  {'TQ-4b':>6s}  {'KIVI':>6s}")
+    print(f"  {'-'*6}  {'-'*6}  {'-'*6}  {'-'*6}  {'-'*6}  {'-'*6}")
     for k in TOP_K_VALUES:
         row = f"  {k:6d}"
         for mode, comp in [
@@ -252,6 +258,7 @@ for bs in BANK_SIZES:
             ("kv_inject_compressed", "int8"),
             ("kv_inject_compressed", "int4"),
             ("kv_inject_compressed", "turboquant_mse"),
+            ("kv_inject_compressed", "kivi"),
         ]:
             r = _get(mode, comp, bs, k)
             if r:
@@ -267,7 +274,7 @@ print("  (FP16 KV per token ~= 4.4 KB for Qwen2.5-3B)")
 num_kv_heads = 2
 head_dim = model.hidden_size // model.num_heads
 kv_per_token = model.num_layers * 2 * num_kv_heads * head_dim * 2  # bytes
-for comp_name, ratio_label in [("none", "1x"), ("int8", "2x"), ("int4", "~4x"), ("turboquant_mse", "~4x")]:
+for comp_name, ratio_label in [("none", "1x"), ("int8", "2x"), ("int4", "~4x"), ("turboquant_mse", "~4x"), ("kivi", "~4x")]:
     comp = create_compressor(comp_name) if comp_name != "none" else None
     bpv = comp.estimate_bits_per_value() if comp else 16.0
     effective_ratio = 16.0 / bpv

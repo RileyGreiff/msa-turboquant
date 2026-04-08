@@ -32,7 +32,7 @@ class Int4Compressor(BaseCompressor):
     def __init__(self, group_size: int = 128) -> None:
         self._group_size = group_size
 
-    def compress(self, tensor: torch.Tensor) -> CompressedTensor:
+    def compress(self, tensor: torch.Tensor, **kwargs) -> CompressedTensor:
         original_dtype = tensor.dtype
         original_shape = tensor.shape
         t = tensor.float()

@@ -11,6 +11,7 @@ from src.compression.base import BaseCompressor, CompressedTensor
 from src.compression.fp16 import FP16Compressor
 from src.compression.int4 import Int4Compressor
 from src.compression.int8 import Int8Compressor
+from src.compression.kivi import KIVICompressor
 from src.compression.turboquant_mse import TurboQuantMSECompressor
 
 if TYPE_CHECKING:
@@ -51,11 +52,17 @@ def create_compressor(method: str = "none", **kwargs) -> BaseCompressor:
             rotation=kwargs.get("rotation", "random_orthogonal"),
             seed=kwargs.get("seed", 42),
         )
+    elif parsed_method == "kivi":
+        return KIVICompressor(
+            bits=kwargs.get("bits", 4),
+            key_axis=kwargs.get("key_axis", "channel"),
+            value_axis=kwargs.get("value_axis", "token"),
+        )
     else:
         raise ValueError(
             f"Unknown compression method: {method}. "
             f"Use 'none', 'fp16', 'int8', 'int4', 'turboquant_mse', "
-            f"or 'turboquant_mse_Nb' (e.g., 'turboquant_mse_3b')."
+            f"'kivi', or 'turboquant_mse_Nb' (e.g., 'turboquant_mse_3b')."
         )
 
 

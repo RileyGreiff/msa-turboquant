@@ -69,12 +69,15 @@ class BaseCompressor(ABC):
     """Abstract base class for tensor compressors."""
 
     @abstractmethod
-    def compress(self, tensor: torch.Tensor) -> CompressedTensor:
+    def compress(self, tensor: torch.Tensor, **kwargs) -> CompressedTensor:
         """Compress a tensor.
 
         Args:
             tensor: Input tensor of any shape. Typically (num_heads, seq_len, head_dim)
                 for KV cache tensors, or (seq_len, hidden_dim) for hidden states.
+            **kwargs: Compressor-specific options. KV-aware compressors (e.g. KIVI)
+                accept ``is_key=True/False`` to apply different quantization axes
+                for keys vs values. Other compressors ignore this.
 
         Returns:
             CompressedTensor containing the compressed data.

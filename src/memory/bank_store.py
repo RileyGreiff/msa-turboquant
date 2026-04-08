@@ -40,19 +40,23 @@ from src.utils.io_utils import ensure_dir
 logger = logging.getLogger("msa_turboquant.memory.bank_store")
 
 
-def save_bank(bank: MemoryBank, bank_dir: Path | str) -> Path:
+def save_bank(bank: MemoryBank, bank_dir: Path | str, save_kv: bool = True) -> Path:
     """Save a MemoryBank to disk.
 
     Args:
         bank: The MemoryBank to save.
         bank_dir: Directory to save into (will be created).
+        save_kv: Whether to save KV tensors. False saves only routing
+            vectors and metadata (much smaller on disk). KV injection
+            modes don't need stored KV since they re-encode from text.
 
     Returns:
         Path to the bank directory.
     """
     bank_dir = Path(bank_dir)
     ensure_dir(bank_dir)
-    kv_dir = ensure_dir(bank_dir / "kv")
+    if save_kv:
+        kv_dir = ensure_dir(bank_dir / "kv")
 
     num_blocks = bank.num_blocks
     meta = bank.metadata
@@ -76,8 +80,23 @@ def save_bank(bank: MemoryBank, bank_dir: Path | str) -> Path:
     token_counts = np.array([kb.num_tokens for kb in bank.kv_blocks], dtype=np.int32)
     np.save(bank_dir / "token_counts.npy", token_counts)
 
-    # 5. Save KV tensors per layer as memmap files
-    if num_blocks > 0 and bank.kv_blocks[0].num_layers > 0:
+    # 5. Save shape info early (before KV, so routing-only banks are always loadable)
+    shape_info = {
+        "num_blocks": num_blocks,
+        "num_layers": meta.num_layers,
+        "num_heads": meta.num_heads,
+        "head_dim": meta.head_dim,
+        "max_tokens": max(kb.num_tokens for kb in bank.kv_blocks) if num_blocks > 0 else 0,
+        "hidden_dim": meta.hidden_dim,
+        "kv_dtype": "float16",
+        "routing_dtype": "float32",
+        "has_kv": save_kv,
+    }
+    with open(bank_dir / "shape_info.json", "w", encoding="utf-8") as f:
+        json.dump(shape_info, f, indent=2)
+
+    # 6. Save KV tensors per layer as memmap files
+    if save_kv and num_blocks > 0 and bank.kv_blocks[0].num_layers > 0:
         max_tokens = max(kb.num_tokens for kb in bank.kv_blocks)
         num_layers = meta.num_layers
         num_heads = meta.num_heads
@@ -111,20 +130,6 @@ def save_bank(bank: MemoryBank, bank_dir: Path | str) -> Path:
             f"max_tokens={max_tokens}, shape per layer: "
             f"({num_blocks}, {num_heads}, {max_tokens}, {head_dim})"
         )
-
-    # 6. Save shape info for memmap loading
-    shape_info = {
-        "num_blocks": num_blocks,
-        "num_layers": meta.num_layers,
-        "num_heads": meta.num_heads,
-        "head_dim": meta.head_dim,
-        "max_tokens": max(kb.num_tokens for kb in bank.kv_blocks) if num_blocks > 0 else 0,
-        "hidden_dim": meta.hidden_dim,
-        "kv_dtype": "float16",
-        "routing_dtype": "float32",
-    }
-    with open(bank_dir / "shape_info.json", "w", encoding="utf-8") as f:
-        json.dump(shape_info, f, indent=2)
 
     total_bytes = sum(f.stat().st_size for f in bank_dir.rglob("*") if f.is_file())
     logger.info(f"Bank saved: {total_bytes / (1024**2):.1f} MB on disk")

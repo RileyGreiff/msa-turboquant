@@ -30,7 +30,7 @@ class Int8Compressor(BaseCompressor):
         self._per_channel = per_channel
         self._symmetric = symmetric  # asymmetric not yet implemented
 
-    def compress(self, tensor: torch.Tensor) -> CompressedTensor:
+    def compress(self, tensor: torch.Tensor, **kwargs) -> CompressedTensor:
         original_dtype = tensor.dtype
         original_shape = tensor.shape
         t = tensor.float()

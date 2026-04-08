@@ -15,7 +15,7 @@ from src.compression.base import BaseCompressor, CompressedTensor
 class FP16Compressor(BaseCompressor):
     """FP16 passthrough — stores data as float16 without quantization."""
 
-    def compress(self, tensor: torch.Tensor) -> CompressedTensor:
+    def compress(self, tensor: torch.Tensor, **kwargs) -> CompressedTensor:
         return CompressedTensor(
             data=tensor.to(torch.float16).clone(),
             original_shape=tensor.shape,

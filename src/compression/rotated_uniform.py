@@ -264,7 +264,7 @@ class RotatedUniformCompressor(BaseCompressor):
 
         return dequantized
 
-    def compress(self, tensor: torch.Tensor) -> CompressedTensor:
+    def compress(self, tensor: torch.Tensor, **kwargs) -> CompressedTensor:
         """Compress: rotate -> quantize."""
         original_dtype = tensor.dtype
         original_shape = tensor.shape

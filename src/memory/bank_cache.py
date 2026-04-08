@@ -82,6 +82,7 @@ class BankCache:
         block_chars: int,
         seed: int,
         load_kv: bool = False,
+        save_kv: bool = True,
     ) -> MemoryBank:
         """Return cached bank if it exists, otherwise build, save, and return.
 
@@ -92,6 +93,9 @@ class BankCache:
             load_kv: Whether to load KV tensors into RAM. Default False
                 to avoid OOM on large banks. KV injection modes re-encode
                 context anyway, so pre-loaded KV is rarely needed.
+            save_kv: Whether to save KV tensors to disk. False saves only
+                routing vectors + metadata (~MB instead of ~GB). Use False
+                for large banks when only routing vectors are needed.
 
         Returns:
             A MemoryBank loaded from cache or freshly built.
@@ -120,9 +124,18 @@ class BankCache:
         bank = builder.build(text_blocks, bank_id=self.cache_key(num_blocks, block_chars, seed))
         build_time = time.perf_counter() - start
 
-        # Save to disk
-        save_bank(bank, bd)
+        # Save to disk (skip KV if requested — saves ~50 GB per 4000-block bank)
+        save_bank(bank, bd, save_kv=save_kv)
         logger.info(f"Bank built and cached: {num_blocks} blocks in {build_time:.1f}s -> {bd}")
+
+        # Clear KV from memory after saving — only routing vectors needed
+        if not save_kv:
+            import gc
+            for kb in bank.kv_blocks:
+                kb.keys.clear()
+                kb.values.clear()
+            gc.collect()
+            torch.cuda.empty_cache()
 
         return bank
 

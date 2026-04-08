@@ -303,8 +303,8 @@ def encode_context_to_kv(
         original_bytes = kv_block.total_kv_bytes
         compressed_bytes = 0
         for i in range(kv_block.num_layers):
-            compressed_k = compressor.compress(kv_block.keys[i])
-            compressed_v = compressor.compress(kv_block.values[i])
+            compressed_k = compressor.compress(kv_block.keys[i], is_key=True)
+            compressed_v = compressor.compress(kv_block.values[i], is_key=False)
             compressed_bytes += compressed_k.compressed_bytes
             compressed_bytes += compressed_v.compressed_bytes
             kv_block.keys[i] = compressor.decompress(compressed_k)

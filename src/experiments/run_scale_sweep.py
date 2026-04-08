@@ -161,6 +161,7 @@ class ScaleSweep:
                 num_blocks=bank_size,
                 block_chars=block_chars,
                 seed=seed,
+                save_kv=False,
             )
         elif task_type != "single_needle":
             # For multi-needle: use in-memory runtime cache to avoid

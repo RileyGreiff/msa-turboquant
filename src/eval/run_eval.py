@@ -728,11 +728,11 @@ class EvalHarness:
         ratios: list[float] = []
         for block in kv_blocks:
             for i, key_tensor in enumerate(block.keys):
-                compressed = self._compressor.compress(key_tensor)
+                compressed = self._compressor.compress(key_tensor, is_key=True)
                 ratios.append(compressed.compression_ratio)
                 block.keys[i] = self._compressor.decompress(compressed)
             for i, val_tensor in enumerate(block.values):
-                compressed = self._compressor.compress(val_tensor)
+                compressed = self._compressor.compress(val_tensor, is_key=False)
                 ratios.append(compressed.compression_ratio)
                 block.values[i] = self._compressor.decompress(compressed)
 

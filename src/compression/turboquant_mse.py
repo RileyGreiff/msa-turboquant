@@ -225,7 +225,7 @@ class TurboQuantMSECompressor(BaseCompressor):
         """Fallback uniform dequantization."""
         return quantized.float() * scale
 
-    def compress(self, tensor: torch.Tensor) -> CompressedTensor:
+    def compress(self, tensor: torch.Tensor, **kwargs) -> CompressedTensor:
         """Compress: normalize -> rotate -> codebook quantize."""
         original_dtype = tensor.dtype
         original_shape = tensor.shape
